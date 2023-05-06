@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "http-server",
+    "types",
+]
+default-members = [
+    "http-server",
+]
+exclude = [
+    "rust-esp32-std",
+]
