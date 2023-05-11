@@ -7,5 +7,6 @@ default-members = [
     "http-server",
 ]
 exclude = [
+    "rust-esp32-ota",
     "rust-esp32-std",
 ]

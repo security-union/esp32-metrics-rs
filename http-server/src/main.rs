@@ -1,19 +1,24 @@
-use std::os::fd::IntoRawFd;
+use std::{fs::OpenOptions, io::Read, os::fd::IntoRawFd, path::PathBuf};
 
+use axum::{
+    extract::{Query, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{Html, IntoResponse},
+    routing::{get, post},
+    Json, Router,
+};
 use base64::Engine;
-use axum::{extract::State, http::{StatusCode, HeaderValue, header}, routing::{get, post}, Json, Router, response::{Html, IntoResponse}};
-use chrono::{DateTime, Utc, NaiveDateTime};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Row};
 use sqlx::types::time::OffsetDateTime;
+use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Row};
 use types::{HttpResponseBody, MetricRequestBody, Topic};
 
 #[tokio::main]
 async fn main() {
     pretty_env_logger::init();
     let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-
 
     // setup connection pool
     let pool = PgPoolOptions::new()
@@ -32,6 +37,7 @@ async fn main() {
     let app = Router::new()
         .route("/favicon.ico", get(favicon))
         .route("/", get(root))
+        .route("/index.html", get(root))
         .route("/metrics", get(select_metrics))
         .route("/metric", post(insert_metric))
         .with_state(pool);
@@ -45,52 +51,14 @@ async fn main() {
 
 type Resp = Result<(StatusCode, Json<HttpResponseBody>), (StatusCode, Json<HttpResponseBody>)>;
 
-async fn root() -> Html<&'static str> {
-    Html(r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>ESP32 Metric Frontend</title>
-</head>
-<body>
-    <h1>ESP32 Metric Frontend</h1>
-    <button onclick="makeRequest()">Get Metrics</button>
-    <div id="metrics"></div>
-    <script>
-    function makeRequest() {
-        fetch("http://" + window.location.host + "/metrics").then((response) => {
-            if (response.status != 200) {
-                console.log("Error: " + response.status);
-            } else {
-                console.log("Success");
-            }
-            return response.json();
-        }).then((data) => {
-            if ('message' in data) {
-                let decoder = new TextDecoder('UTF-8');
-                let array = new Uint8Array(data.message);
-                let message = decoder.decode(array);
-                console.log("Error: " + message);
-                return;
-            }
-            updateMetrics(data);
-        }).catch((error) => {
-            console.log(error);
-        });
-    }
-    function updateMetrics(metrics) {
-        if (metrics === undefined) {
-            return;
-        }
-        var metricsDiv = document.getElementById("metrics");
-        metricsDiv.innerHTML = "<p>Humidity: " + metrics.humidity + "</p>" +
-                            "<p>Temperature: " + metrics.temperature_celsius + "°C</p>" +
-                            "<p>CO2 PPM: " + metrics.co2_ppm + "</p>" +
-                            "<p>Device ID: " + metrics.device_id + "</p>" +
-                            "<p>Device Timestamp: " + new Date(metrics.device_timestamp * 1000).toLocaleString() + "</p>";
-    }
-    </script>
-</body>
-</html>"#)
+async fn root() -> Html<String> {
+    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("web")
+        .join("index.html");
+    let mut file = OpenOptions::new().read(true).open(d).unwrap();
+    let mut buf = String::new();
+    file.read_to_string(&mut buf).unwrap();
+    Html(buf)
 }
 
 // NOTE: State must be the first argument
@@ -122,7 +90,7 @@ struct ClimateMetricRow {
     temperature_celsius: f64,
     humidity: f64,
     co2_ppm: i32,
-    created_at: NaiveDateTime
+    created_at: NaiveDateTime,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -134,26 +102,52 @@ struct ClimateMetric {
     co2_ppm: i32,
 }
 
-async fn select_metrics(State(pool): State<PgPool>) -> Result<(StatusCode, Json<ClimateMetric>), (StatusCode, Json<HttpResponseBody>)> {
-    let row = sqlx::query_as::<Postgres, ClimateMetricRow>("select distinct on (device_id) * from climate_metrics order by device_id, device_timestamp desc")
-        .fetch_one(&pool)
+#[derive(Deserialize)]
+struct SelectMetricsQuery {
+    start_timestamp: Option<i64>,
+    end_timestamp: Option<i64>,
+}
+
+async fn select_metrics(
+    State(pool): State<PgPool>,
+    query: Query<SelectMetricsQuery>,
+) -> Result<(StatusCode, Json<Vec<ClimateMetric>>), (StatusCode, Json<HttpResponseBody>)> {
+    let query = query.0;
+    let query_str = "select * from climate_metrics where device_timestamp between $1 and $2 order by device_timestamp desc";
+    let rows = sqlx::query_as::<Postgres, ClimateMetricRow>(query_str)
+        .bind(OffsetDateTime::from_unix_timestamp(query.start_timestamp.unwrap_or(0)).unwrap())
+        .bind(
+            OffsetDateTime::from_unix_timestamp(
+                query.end_timestamp.unwrap_or(Utc::now().timestamp()),
+            )
+            .unwrap(),
+        )
+        .fetch_all(&pool)
         .await
         .map_err(internal_error)?;
-    let metric = ClimateMetric {
-        device_id: row.device_id,
-        device_timestamp: row.device_timestamp.timestamp(),
-        temperature_celsius: row.temperature_celsius,
-        humidity: row.humidity,
-        co2_ppm: row.co2_ppm,
-    };
-    Ok((StatusCode::OK, Json(metric)))
+    let metrics = rows
+        .into_iter()
+        .map(|row| ClimateMetric {
+            device_id: row.device_id,
+            device_timestamp: row.device_timestamp.timestamp(),
+            temperature_celsius: row.temperature_celsius,
+            humidity: row.humidity,
+            co2_ppm: row.co2_ppm,
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(metrics)))
 }
 
 async fn favicon() -> impl IntoResponse {
     // one pixel favicon generated from https://png-pixel.com/
     let one_pixel_favicon = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mPk+89QDwADvgGOSHzRgAAAAABJRU5ErkJggg==";
-    let pixel_favicon = base64::prelude::BASE64_STANDARD.decode(one_pixel_favicon).unwrap();
-    ([(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))], pixel_favicon)
+    let pixel_favicon = base64::prelude::BASE64_STANDARD
+        .decode(one_pixel_favicon)
+        .unwrap();
+    (
+        [(header::CONTENT_TYPE, HeaderValue::from_static("image/png"))],
+        pixel_favicon,
+    )
 }
 
 /// Utility function for mapping any error into a `500 Internal Server Error`

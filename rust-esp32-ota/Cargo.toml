@@ -1,0 +1,23 @@
+[package]
+name = "rust-esp32-ota"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[dependencies]
+anyhow = "1"
+esp-idf-sys = { version = "0.32", features = ["binstart"] }
+esp-idf-svc = "0.45"
+esp-idf-hal = "0.40"
+embedded-svc = "0.24"
+log = "0.4.17"
+
+[build-dependencies]
+anyhow = "1"
+embuild = { version = "0.31", features = ["elf"] }

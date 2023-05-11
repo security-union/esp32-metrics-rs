@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Metric Frontend</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        .axis path,
+        .axis line {
+            fill: none;
+            stroke: #000;
+            shape-rendering: crispEdges;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>ESP32 Metric Frontend</h1>
+    <button
+        onclick="makeRequest(parseInt(new Date(new Date().getTime() - (60 * 60 * 1000)).getTime() / 1000), parseInt(new Date().getTime() / 1000))">Last
+        Hour</button>
+    <button
+        onclick="makeRequest(parseInt(new Date(new Date().getTime() - (12 * 60 * 60 * 1000)).getTime() / 1000), parseInt(new Date().getTime() / 1000))">Last
+        12 Hours</button>
+    <button
+        onclick="makeRequest(parseInt(new Date(new Date().getTime() - (24 * 60 * 60 * 1000)).getTime() / 1000), parseInt(new Date().getTime() / 1000))">Last
+        24 Hours</button>
+    <button
+        onclick="makeRequest(parseInt(new Date(new Date().getTime() - (7 * 24 * 60 * 60 * 1000)).getTime() / 1000), parseInt(new Date().getTime() / 1000))">Last
+        7 Days</button>
+    <button onclick="makeRequest(0, parseInt(new Date().getTime() / 1000))">All Data</button>
+    <div id="metrics"></div>
+    <div id="temperature-chart-container"></div>
+    <div id="humidity-chart-container"></div>
+    <div id="co2-chart-container"></div>
+    <script>
+        function makeRequest(startTime, endTime) {
+            fetch("http://" + window.location.host + "/metrics?start_timestamp=" + startTime + "&end_timestamp=" + endTime).then((response) => {
+                if (response.status != 200) {
+                    console.log("Error: " + response.status);
+                } else {
+                    console.log("Success");
+                }
+                return response.json();
+            }).then((data) => {
+                if ('message' in data) {
+                    let decoder = new TextDecoder('UTF-8');
+                    let array = new Uint8Array(data.message);
+                    let message = decoder.decode(array);
+                    console.log("Error: " + message);
+                    return;
+                }
+                for (metric of data) {
+                    metric.time = new Date(metric.device_timestamp * 1000);
+                    metric.temp = celsiusToFahrenheit(metric.temperature_celsius);
+                }
+                updateMetrics(data[0]);
+                temperatureChart(data);
+                humidityChart(data);
+                co2Chart(data);
+            }).catch((error) => {
+                console.log(error);
+            });
+        }
+        function updateMetrics(metrics) {
+            if (metrics === undefined) {
+                return;
+            }
+            var metricsDiv = document.getElementById("metrics");
+            metricsDiv.innerHTML = "<h3>Most recent data point</h3>" +
+                "<p>Humidity: " + metrics.humidity + "</p>" +
+                "<p>Temperature: " + metrics.temperature_celsius + "°C</p>" +
+                "<p>Temperature: " + metrics.temp + "°F</p>" +
+                "<p>CO2 PPM: " + metrics.co2_ppm + "</p>" +
+                "<p>Device ID: " + metrics.device_id + "</p>" +
+                "<p>Device Timestamp: " + new Date(metrics.device_timestamp * 1000).toLocaleString() + "</p>";
+        }
+        function celsiusToFahrenheit(celsius) {
+            return celsius * 9 / 5 + 32;
+        }
+
+        function temperatureChart(metrics) {
+            d3.selectAll("#temperature-chart-container > *").remove();
+
+            const endTime = metrics[0].time;
+            const startTime = metrics[metrics.length - 1].time;
+
+            const width = 800;
+            const height = 400;
+            const svg = d3.select('#temperature-chart-container')
+                .append('svg')
+                .attr('width', width)
+                .attr('height', height);
+
+            const xScale = d3.scaleTime()
+                .domain(d3.extent(metrics, d => d.time))
+                .range([50, 750]);
+
+            const yScale = d3.scaleLinear()
+                .domain([0, d3.max(metrics, d => d.temp)])
+                .range([350, 50]);
+
+            const xAxis = d3.axisBottom(xScale);
+            const yAxis = d3.axisLeft(yScale);
+
+            svg.append('g')
+                .attr('transform', 'translate(0, 350)')
+                .call(xAxis);
+
+            svg.append('g')
+                .attr('transform', 'translate(50, 0)')
+                .call(yAxis);
+
+            const line = d3.line()
+                .x(d => xScale(d.time))
+                .y(d => yScale(d.temp));
+
+
+            // Add the chart title
+            svg.append("text")
+                .attr("x", width / 2)
+                .attr("y", 24)
+                .attr("class", "chart-title")
+                .attr("text-anchor", "middle")
+                .text('Temp (°F) - ' + startTime.toLocaleString() + ' - ' + endTime.toLocaleString());
+
+            svg.append('path')
+                .datum(metrics)
+                .attr('fill', 'none')
+                .attr('stroke', 'red')
+                .attr('stroke-width', 2)
+                .attr('d', line);
+        }
+        function humidityChart(metrics) {
+            d3.selectAll("#humidity-chart-container > *").remove();
+            const endTime = metrics[0].time;
+            const startTime = metrics[metrics.length - 1].time;
+            const width = 800;
+            const height = 400;
+
+            const svg = d3.select('#humidity-chart-container')
+                .append('svg')
+                .attr('width', width)
+                .attr('height', height);
+
+            const xScale = d3.scaleTime()
+                .domain(d3.extent(metrics, d => d.time))
+                .range([50, 750]);
+
+            const yScale = d3.scaleLinear()
+                .domain([0, d3.max(metrics, d => d.humidity)])
+                .range([350, 50]);
+
+            const xAxis = d3.axisBottom(xScale);
+            const yAxis = d3.axisLeft(yScale);
+
+            svg.append('g')
+                .attr('transform', 'translate(0, 350)')
+                .call(xAxis);
+
+            svg.append('g')
+                .attr('transform', 'translate(50, 0)')
+                .call(yAxis);
+
+            const line = d3.line()
+                .x(d => xScale(d.time))
+                .y(d => yScale(d.humidity));
+
+            svg.append("text")
+                .attr("x", width / 2)
+                .attr("y", 24)
+                .attr("class", "chart-title")
+                .attr("text-anchor", "middle")
+                .text('Humidity % - ' + startTime.toLocaleString() + ' - ' + endTime.toLocaleString());
+            svg.append('path')
+                .datum(metrics)
+                .attr('fill', 'none')
+                .attr('stroke', 'blue')
+                .attr('stroke-width', 2)
+                .attr('d', line);
+        }
+        function co2Chart(metrics) {
+            d3.selectAll("#co2-chart-container > *").remove();
+            const endTime = metrics[0].time;
+            const startTime = metrics[metrics.length - 1].time;
+            const width = 800;
+            const height = 400;
+
+            const svg = d3.select('#co2-chart-container')
+                .append('svg')
+                .attr('width', width)
+                .attr('height', height);
+
+            const xScale = d3.scaleTime()
+                .domain(d3.extent(metrics, d => d.time))
+                .range([50, 750]);
+
+            const yScale = d3.scaleLinear()
+                .domain([0, d3.max(metrics, d => d.co2_ppm)])
+                .range([350, 50]);
+
+            const xAxis = d3.axisBottom(xScale);
+            const yAxis = d3.axisLeft(yScale);
+
+            svg.append('g')
+                .attr('transform', 'translate(0, 350)')
+                .call(xAxis);
+
+            svg.append('g')
+                .attr('transform', 'translate(50, 0)')
+                .call(yAxis);
+
+            const line = d3.line()
+                .x(d => xScale(d.time))
+                .y(d => yScale(d.co2_ppm));
+
+            svg.append("text")
+                .attr("x", width / 2)
+                .attr("y", 24)
+                .attr("class", "chart-title")
+                .attr("text-anchor", "middle")
+                .text('CO2 PPM - ' + startTime.toLocaleString() + ' - ' + endTime.toLocaleString());
+            svg.append('path')
+                .datum(metrics)
+                .attr('fill', 'none')
+                .attr('stroke', 'green')
+                .attr('stroke-width', 2)
+                .attr('d', line);
+        }    </script>
+</body>
+
+</html>
